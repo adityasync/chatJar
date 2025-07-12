@@ -23,7 +23,7 @@ public class ChatClientUI {
 
     private boolean isDarkMode = false;
 
-    private static final String[] ROOMS = {"Sun Squad", "Cake Squad", "Moon Crew", "Star Gang"};
+    private static final String[] ROOMS = { "Sun Squad", "Cake Squad", "Moon Crew", "Star Gang" };
 
     public ChatClientUI() {
         username = JOptionPane.showInputDialog(null, "Enter your username:");
@@ -42,20 +42,20 @@ public class ChatClientUI {
 
     private void selectRoom() {
         currentRoom = (String) JOptionPane.showInputDialog(
-            null,
-            "Choose a chat room:",
-            "Room Selection",
-            JOptionPane.PLAIN_MESSAGE,
-            null,
-            ROOMS,
-            ROOMS[0]);
+                null,
+                "Choose a chat room:",
+                "Room Selection",
+                JOptionPane.PLAIN_MESSAGE,
+                null,
+                ROOMS,
+                ROOMS[0]);
         if (currentRoom == null || currentRoom.trim().isEmpty()) {
             JOptionPane.showMessageDialog(null, "You must select a room.");
             System.exit(0);
         }
     }
 
-    private JLabel title;  // declare title label globally for easy update
+    private JLabel title;
 
     private void initUI() {
         UIManager.put("TextField.font", new Font("Segoe UI", Font.PLAIN, 14));
@@ -68,27 +68,22 @@ public class ChatClientUI {
         frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
         frame.setLayout(new BorderLayout());
 
-        // Header
+        // Header panel
         JPanel header = new JPanel(new BorderLayout(10, 0));
-        header.setBackground(new Color(30, 144, 255));
         header.setPreferredSize(new Dimension(frame.getWidth(), 50));
 
         title = new JLabel("  " + currentRoom);
-        title.setForeground(Color.WHITE);
         title.setFont(new Font("Segoe UI", Font.BOLD, 18));
         header.add(title, BorderLayout.WEST);
 
-        // Room selector dropdown
         roomSelector = new JComboBox<>(ROOMS);
         roomSelector.setSelectedItem(currentRoom);
         header.add(roomSelector, BorderLayout.CENTER);
 
-        // Dark mode toggle button
         themeToggleButton = new JButton("Dark Mode");
         header.add(themeToggleButton, BorderLayout.EAST);
 
         typingLabel = new JLabel(" ");
-        typingLabel.setForeground(Color.WHITE);
         typingLabel.setHorizontalAlignment(SwingConstants.RIGHT);
         header.add(typingLabel, BorderLayout.SOUTH);
 
@@ -97,7 +92,6 @@ public class ChatClientUI {
         // Chat area
         chatArea = new JTextPane();
         chatArea.setEditable(false);
-        chatArea.setBackground(new Color(245, 245, 245));
         JScrollPane scrollPane = new JScrollPane(chatArea);
         frame.add(scrollPane, BorderLayout.CENTER);
 
@@ -107,7 +101,7 @@ public class ChatClientUI {
         emojiButton = new JButton("😊");
 
         JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
-        JPanel rightPanel = new JPanel(new GridLayout(1, 3, 5, 5)); 
+        JPanel rightPanel = new JPanel(new GridLayout(1, 3, 5, 5));
         rightPanel.add(emojiButton);
         rightPanel.add(sendButton);
 
@@ -157,32 +151,82 @@ public class ChatClientUI {
     }
 
     private void applyTheme() {
+        Color bgDark = new Color(34, 34, 34);
+        Color bgLight = new Color(245, 245, 245);
+        Color inputBgDark = new Color(64, 64, 64);
+        Color btnBgDark = new Color(45, 140, 240);
+        Color fgDark = Color.WHITE;
+        Color fgLight = Color.BLACK;
+        Color lightGray = Color.LIGHT_GRAY;
+        Color darkGray = Color.DARK_GRAY;
+
+        JPanel header = (JPanel) frame.getContentPane().getComponent(0); // Header panel
+
         if (isDarkMode) {
             frame.getContentPane().setBackground(Color.DARK_GRAY);
-            chatArea.setBackground(new Color(34, 34, 34));
-            chatArea.setForeground(Color.WHITE);
-            typingLabel.setForeground(Color.LIGHT_GRAY);
-            inputField.setBackground(new Color(64, 64, 64));
-            inputField.setForeground(Color.WHITE);
-            sendButton.setBackground(new Color(45, 140, 240));
-            sendButton.setForeground(Color.WHITE);
-            emojiButton.setBackground(new Color(45, 140, 240));
-            emojiButton.setForeground(Color.WHITE);
-            roomSelector.setBackground(new Color(64, 64, 64));
-            roomSelector.setForeground(Color.WHITE);
+
+            header.setBackground(bgDark);
+            title.setForeground(fgDark);
+
+            roomSelector.setBackground(inputBgDark);
+            roomSelector.setForeground(fgDark);
+            roomSelector.setOpaque(true);
+
+            typingLabel.setForeground(lightGray);
+
+            chatArea.setBackground(bgDark);
+            chatArea.setForeground(fgDark);
+
+            inputField.setBackground(inputBgDark);
+            inputField.setForeground(fgDark);
+
+            sendButton.setBackground(btnBgDark);
+            sendButton.setForeground(fgDark);
+            sendButton.setFocusPainted(false);
+            sendButton.setBorderPainted(false);
+
+            emojiButton.setBackground(btnBgDark);
+            emojiButton.setForeground(fgDark);
+            emojiButton.setFocusPainted(false);
+            emojiButton.setBorderPainted(false);
+
+            themeToggleButton.setBackground(btnBgDark);
+            themeToggleButton.setForeground(fgDark);
+            themeToggleButton.setFocusPainted(false);
+            themeToggleButton.setBorderPainted(false);
+
         } else {
             frame.getContentPane().setBackground(null);
-            chatArea.setBackground(new Color(245, 245, 245));
-            chatArea.setForeground(Color.BLACK);
-            typingLabel.setForeground(Color.BLACK);
-            inputField.setBackground(Color.WHITE);
-            inputField.setForeground(Color.BLACK);
-            sendButton.setBackground(null);
-            sendButton.setForeground(Color.BLACK);
-            emojiButton.setBackground(null);
-            emojiButton.setForeground(Color.BLACK);
+
+            header.setBackground(null);
+            title.setForeground(fgLight);
+
             roomSelector.setBackground(Color.WHITE);
-            roomSelector.setForeground(Color.BLACK);
+            roomSelector.setForeground(fgLight);
+            roomSelector.setOpaque(true);
+
+            typingLabel.setForeground(fgLight);
+
+            chatArea.setBackground(bgLight);
+            chatArea.setForeground(fgLight);
+
+            inputField.setBackground(Color.WHITE);
+            inputField.setForeground(fgLight);
+
+            sendButton.setBackground(null);
+            sendButton.setForeground(fgLight);
+            sendButton.setFocusPainted(true);
+            sendButton.setBorderPainted(true);
+
+            emojiButton.setBackground(null);
+            emojiButton.setForeground(fgLight);
+            emojiButton.setFocusPainted(true);
+            emojiButton.setBorderPainted(true);
+
+            themeToggleButton.setBackground(null);
+            themeToggleButton.setForeground(fgLight);
+            themeToggleButton.setFocusPainted(true);
+            themeToggleButton.setBorderPainted(true);
         }
     }
 
@@ -204,7 +248,8 @@ public class ChatClientUI {
             Style style = chatArea.addStyle("Style", null);
             StyleConstants.setFontSize(style, 14);
             StyleConstants.setFontFamily(style, "Segoe UI");
-            StyleConstants.setForeground(style, isSelf ? new Color(30, 144, 255) : (isDarkMode ? Color.LIGHT_GRAY : Color.DARK_GRAY));
+            StyleConstants.setForeground(style,
+                    isSelf ? new Color(30, 144, 255) : (isDarkMode ? Color.LIGHT_GRAY : Color.DARK_GRAY));
             StyleConstants.setBold(style, isSelf);
             doc.insertString(doc.getLength(), message + "\n", style);
 
@@ -212,6 +257,22 @@ public class ChatClientUI {
 
         } catch (BadLocationException e) {
             e.printStackTrace();
+        }
+    }
+
+    private boolean isMessageFromMe(String message) {
+        try {
+            int start = message.indexOf("] ");
+            if (start == -1)
+                return false;
+            start += 2; // move past "] "
+            int end = message.indexOf(" [", start);
+            if (end == -1)
+                return false;
+            String sender = message.substring(start, end);
+            return sender.equals(username);
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -226,7 +287,7 @@ public class ChatClientUI {
             try (BufferedReader reader = new BufferedReader(new FileReader(historyFile))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    appendMessage(line, line.startsWith("Me [") || line.contains(username + " ["));
+                    appendMessage(line, line.startsWith("Me [") || isMessageFromMe(line));
                 }
             } catch (IOException e) {
                 System.out.println("⚠️ Failed to load history for " + room);
@@ -265,8 +326,10 @@ public class ChatClientUI {
                                 }
                             }
                         } else if (msg.startsWith("[" + currentRoom + "] ")) {
-                            appendMessage(msg.substring(currentRoom.length() + 3), msg.startsWith("[" + currentRoom + "] " + username));
-                            saveToHistory(msg.substring(currentRoom.length() + 3));
+                            boolean isSelf = isMessageFromMe(msg);
+                            String messageToShow = msg.substring(currentRoom.length() + 3); // skip "[Room] "
+                            appendMessage(messageToShow, isSelf);
+                            saveToHistory(messageToShow);
                         }
                     }
                 } catch (IOException e) {
@@ -289,7 +352,7 @@ public class ChatClientUI {
 
     private void showEmojiMenu() {
         JPopupMenu emojiMenu = new JPopupMenu();
-        String[] emojis = {"😊", "😂", "😢", "❤️", "👍", "🎉"};
+        String[] emojis = { "😊", "😂", "😢", "❤️", "👍", "🎉" };
         for (String emoji : emojis) {
             JMenuItem item = new JMenuItem(emoji);
             item.addActionListener(e -> inputField.setText(inputField.getText() + emoji));
@@ -299,7 +362,8 @@ public class ChatClientUI {
     }
 
     private void setupSystemTray() {
-        if (!SystemTray.isSupported()) return;
+        if (!SystemTray.isSupported())
+            return;
 
         SystemTray tray = SystemTray.getSystemTray();
         Image icon = Toolkit.getDefaultToolkit().createImage(new byte[0]);
