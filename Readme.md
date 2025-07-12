@@ -1,8 +1,3 @@
-Got it! Here’s a complete **README.md** for your whole Java Group Chat project including both client and server, with instructions, features, and placeholders for images.
-
----
-
-````markdown
 # Java Group Chat Application
 
 A simple real-time group chat application built in Java using sockets with a Swing GUI client and a multi-threaded server.  
