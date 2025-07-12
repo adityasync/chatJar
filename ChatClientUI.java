@@ -157,13 +157,11 @@ public class ChatClientUI {
         Color btnBgDark = new Color(45, 140, 240);
         Color fgDark = Color.WHITE;
         Color fgLight = Color.BLACK;
-        Color lightGray = Color.LIGHT_GRAY;
-        Color darkGray = Color.DARK_GRAY;
 
         JPanel header = (JPanel) frame.getContentPane().getComponent(0); // Header panel
 
         if (isDarkMode) {
-            frame.getContentPane().setBackground(Color.DARK_GRAY);
+            frame.getContentPane().setBackground(bgDark);
 
             header.setBackground(bgDark);
             title.setForeground(fgDark);
@@ -172,10 +170,10 @@ public class ChatClientUI {
             roomSelector.setForeground(fgDark);
             roomSelector.setOpaque(true);
 
-            typingLabel.setForeground(lightGray);
+            typingLabel.setForeground(fgDark); // changed from lightGray to WHITE for better visibility
 
             chatArea.setBackground(bgDark);
-            chatArea.setForeground(fgDark);
+            chatArea.setForeground(fgDark); // chat text bright white in dark mode
 
             inputField.setBackground(inputBgDark);
             inputField.setForeground(fgDark);
@@ -196,7 +194,7 @@ public class ChatClientUI {
             themeToggleButton.setBorderPainted(false);
 
         } else {
-            frame.getContentPane().setBackground(null);
+            frame.getContentPane().setBackground(bgLight);
 
             header.setBackground(null);
             title.setForeground(fgLight);
