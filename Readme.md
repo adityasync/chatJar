@@ -76,6 +76,7 @@ java ChatClientUI
 
 ## Project Structure
 
+```bash
 📁 Project Root
 │
 ├── ChatServer.java           # Main server class to accept clients and handle communication
@@ -89,7 +90,7 @@ java ChatClientUI
 │   └── ClipentLog.jpg        # Client log terminal output
 │
 └── history_<roomname>.txt    # Auto-generated chat logs (e.g., history_Sun_Squad.txt)
-
+```
 ---
 
 ## Communication Protocol
