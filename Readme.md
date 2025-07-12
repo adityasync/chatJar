@@ -27,25 +27,6 @@ Supports multiple chat rooms, dark mode, emoji input, typing indicators, and per
 
 ---
 
-## Screenshots
-
-### Client UI - Light Mode  
-![Light Mode Screenshot](images/client_light_mode.png)
-
-### Client UI - Dark Mode  
-![Dark Mode Screenshot](images/client_dark_mode.png)
-
-### Room Selection Dialog  
-![Room Selection Screenshot](images/room_selection.png)
-
-### Emoji Picker Popup  
-![Emoji Picker Screenshot](images/emoji_picker.png)
-
-### Server Console (Example)  
-![Server Screenshot](images/server_console.png)
-
----
-
 ## Getting Started
 
 ### Prerequisites
