@@ -1,398 +1,712 @@
 import javax.swing.*;
+import javax.swing.border.TitledBorder;
 import javax.swing.text.*;
 import java.awt.*;
-import java.awt.event.*;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.*;
 import java.net.*;
 import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.util.*;
+import java.util.Set;
+import java.util.HashSet;
 
+/**
+ * ChatClientUI - Swing-based GUI client for the multi-room chat system
+ */
 public class ChatClientUI {
+    // UI Components
     private JFrame frame;
     private JTextPane chatArea;
     private JTextField inputField;
     private JLabel typingLabel;
-    private JButton sendButton, emojiButton, themeToggleButton;
-    private PrintWriter out;
-    private String username;
-    private Socket socket;
-    private TrayIcon trayIcon;
-
+    private JLabel titleLabel;
+    private JButton sendButton;
+    private JButton emojiButton;
     private JComboBox<String> roomSelector;
+    private JList<String> usersList;
+    private DefaultListModel<String> usersListModel;
+    
+    // Network components
+    private PrintWriter out;
+    private Socket socket;
+    private BufferedReader in;
+    
+    // Client state
+    private String username;
     private String currentRoom = "";
-
-    private boolean isDarkMode = false;
-
-    private static final String[] ROOMS = { "Sun Squad", "Cake Squad", "Moon Crew", "Star Gang" };
-
+    private volatile boolean isConnected = false;
+    
+    // Message types
+    private static final String MSG_HISTORY = "HISTORY";
+    
+    // Configuration
+    private static final String SERVER_HOST = "localhost";
+    private static final int SERVER_PORT = 8888;
+    private static final String[] AVAILABLE_ROOMS = {
+        "Sun Squad", "Cake Squad", "Moon Crew", "Star Gang"
+    };
+    
+    // Online users set
+    private Set<String> onlineUsers = new HashSet<>();
+    
     public ChatClientUI() {
-        username = JOptionPane.showInputDialog(null, "Enter your username:");
-        if (username == null || username.trim().isEmpty()) {
-            JOptionPane.showMessageDialog(null, "Username is required.");
-            System.exit(0);
-        }
-
-        selectRoom();
-
-        initUI();
-        loadHistoryForRoom(currentRoom);
-        connectToServer();
-        setupSystemTray();
+        SwingUtilities.invokeLater(() -> {
+            try {
+                // Set system look and feel
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            } catch (Exception e) {
+                System.err.println("⚠️ Could not set system look and feel: " + e.getMessage());
+            }
+            
+            initializeClient();
+        });
     }
-
-    private void selectRoom() {
+    
+    /**
+     * Initialize the client - get user input and setup UI
+     */
+    private void initializeClient() {
+        // Get username
+        do {
+            username = JOptionPane.showInputDialog(
+                null,
+                "Enter your username:",
+                "ChatJar - Login",
+                JOptionPane.QUESTION_MESSAGE
+            );
+            
+            if (username == null) {
+                System.exit(0); // User cancelled
+            }
+            
+            username = username.trim();
+            
+            if (username.isEmpty()) {
+                JOptionPane.showMessageDialog(
+                    null,
+                    "Username cannot be empty. Please try again.",
+                    "Invalid Username",
+                    JOptionPane.WARNING_MESSAGE
+                );
+            }
+        } while (username.isEmpty());
+        
+        // Get room selection
         currentRoom = (String) JOptionPane.showInputDialog(
-                null,
-                "Choose a chat room:",
-                "Room Selection",
-                JOptionPane.PLAIN_MESSAGE,
-                null,
-                ROOMS,
-                ROOMS[0]);
-        if (currentRoom == null || currentRoom.trim().isEmpty()) {
-            JOptionPane.showMessageDialog(null, "You must select a room.");
-            System.exit(0);
+            null,
+            "Choose a chat room:",
+            "ChatJar - Room Selection",
+            JOptionPane.QUESTION_MESSAGE,
+            null,
+            AVAILABLE_ROOMS,
+            AVAILABLE_ROOMS[0]
+        );
+        
+        if (currentRoom == null) {
+            System.exit(0); // User cancelled
         }
+        
+        // Initialize UI and connect to server
+        initializeUI();
+        connectToServer();
+        
+        frame.setVisible(true);
     }
-
-    private JLabel title;
-
-    private void initUI() {
-        UIManager.put("TextField.font", new Font("Segoe UI", Font.PLAIN, 14));
-        UIManager.put("TextArea.font", new Font("Segoe UI", Font.PLAIN, 14));
-        UIManager.put("Label.font", new Font("Segoe UI", Font.PLAIN, 14));
-        UIManager.put("Button.font", new Font("Segoe UI", Font.PLAIN, 14));
-
-        frame = new JFrame(username + " @ " + currentRoom);
-        frame.setSize(700, 600);
-        frame.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
+    
+    /**
+     * Initialize the user interface
+     */
+    private void initializeUI() {
+        frame = new JFrame("ChatJar - " + username);
+        frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+        frame.setSize(1000, 700);
+        frame.setLocationRelativeTo(null);
         frame.setLayout(new BorderLayout());
-
-        // Header panel
-        JPanel header = new JPanel(new BorderLayout(10, 0));
-        header.setPreferredSize(new Dimension(frame.getWidth(), 50));
-
-        title = new JLabel("  " + currentRoom);
-        title.setFont(new Font("Segoe UI", Font.BOLD, 18));
-        header.add(title, BorderLayout.WEST);
-
-        roomSelector = new JComboBox<>(ROOMS);
+        
+        // Add window close listener
+        frame.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent e) {
+                disconnect();
+                System.exit(0);
+            }
+        });
+        
+        // Create main split pane
+        JSplitPane mainSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
+        mainSplitPane.setDividerLocation(250);
+        mainSplitPane.setResizeWeight(0.2);
+        
+        // Create sidebar and chat panel
+        JPanel sidebar = createSidebar();
+        JPanel chatPanel = createChatPanel();
+        
+        mainSplitPane.setLeftComponent(sidebar);
+        mainSplitPane.setRightComponent(chatPanel);
+        
+        frame.add(mainSplitPane, BorderLayout.CENTER);
+        
+        setupEventListeners();
+        applyTheme();
+    }
+    
+    /**
+     * Creates the left sidebar with user info, rooms, and user list
+     */
+    private JPanel createSidebar() {
+        JPanel sidebar = new JPanel(new BorderLayout());
+        sidebar.setBackground(new Color(240, 242, 245));
+        sidebar.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        
+        // User info panel
+        JPanel userPanel = new JPanel(new BorderLayout());
+        userPanel.setOpaque(false);
+        JLabel userLabel = new JLabel("  👤 " + username);
+        userLabel.setFont(new Font("Segoe UI", Font.BOLD, 16));
+        userLabel.setBorder(BorderFactory.createEmptyBorder(5, 5, 15, 5));
+        userPanel.add(userLabel, BorderLayout.WEST);
+        
+        // Room selection panel
+        JPanel roomPanel = new JPanel(new BorderLayout());
+        roomPanel.setOpaque(false);
+        roomPanel.setBorder(BorderFactory.createTitledBorder("🏠 Rooms"));
+        
+        roomSelector = new JComboBox<>(AVAILABLE_ROOMS);
         roomSelector.setSelectedItem(currentRoom);
-        header.add(roomSelector, BorderLayout.CENTER);
-
-        themeToggleButton = new JButton("Dark Mode");
-        header.add(themeToggleButton, BorderLayout.EAST);
-
+        roomSelector.setMaximumRowCount(10);
+        roomPanel.add(roomSelector, BorderLayout.NORTH);
+        
+        // User list panel
+        JPanel usersPanel = new JPanel(new BorderLayout());
+        usersPanel.setOpaque(false);
+        usersPanel.setBorder(BorderFactory.createTitledBorder("👥 Online Users (0)"));
+        
+        usersListModel = new DefaultListModel<>();
+        usersList = new JList<>(usersListModel);
+        usersList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        usersList.setCellRenderer(new UserListCellRenderer());
+        
+        JScrollPane usersScrollPane = new JScrollPane(usersList);
+        usersScrollPane.setPreferredSize(new Dimension(200, 200));
+        usersPanel.add(usersScrollPane, BorderLayout.CENTER);
+        
+        sidebar.add(userPanel, BorderLayout.NORTH);
+        sidebar.add(roomPanel, BorderLayout.CENTER);
+        sidebar.add(usersPanel, BorderLayout.SOUTH);
+        
+        return sidebar;
+    }
+    
+    /**
+     * Creates the main chat panel with messages and input
+     */
+    private JPanel createChatPanel() {
+        JPanel chatPanel = new JPanel(new BorderLayout());
+        
+        // Header panel
+        JPanel headerPanel = new JPanel(new BorderLayout());
+        headerPanel.setBorder(BorderFactory.createEmptyBorder(10, 15, 10, 15));
+        headerPanel.setBackground(Color.WHITE);
+        
+        titleLabel = new JLabel("# " + currentRoom);
+        titleLabel.setFont(new Font("Segoe UI", Font.BOLD, 18));
+        headerPanel.add(titleLabel, BorderLayout.WEST);
+        
         typingLabel = new JLabel(" ");
-        typingLabel.setHorizontalAlignment(SwingConstants.RIGHT);
-        header.add(typingLabel, BorderLayout.SOUTH);
-
-        frame.add(header, BorderLayout.NORTH);
-
+        typingLabel.setForeground(Color.GRAY);
+        typingLabel.setFont(new Font("Segoe UI", Font.ITALIC, 12));
+        headerPanel.add(typingLabel, BorderLayout.EAST);
+        
         // Chat area
         chatArea = new JTextPane();
         chatArea.setEditable(false);
-        JScrollPane scrollPane = new JScrollPane(chatArea);
-        frame.add(scrollPane, BorderLayout.CENTER);
-
-        // Input area
-        inputField = new JTextField();
-        sendButton = new JButton("Send");
+        chatArea.setContentType("text/plain");
+        chatArea.setBackground(Color.WHITE);
+        chatArea.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        
+        // Set up styled document for better formatting
+        StyledDocument doc = chatArea.getStyledDocument();
+        SimpleAttributeSet attrs = new SimpleAttributeSet();
+        StyleConstants.setLineSpacing(attrs, 0.3f);
+        doc.setParagraphAttributes(0, 0, attrs, false);
+        
+        JScrollPane chatScrollPane = new JScrollPane(chatArea);
+        chatScrollPane.setBorder(null);
+        chatScrollPane.getViewport().setOpaque(false);
+        chatScrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        
+        // Input panel
+        JPanel inputPanel = new JPanel(new BorderLayout(10, 10));
+        inputPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        inputPanel.setBackground(Color.WHITE);
+        
         emojiButton = new JButton("😊");
-
-        JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
-        JPanel rightPanel = new JPanel(new GridLayout(1, 3, 5, 5));
-        rightPanel.add(emojiButton);
-        rightPanel.add(sendButton);
-
-        bottomPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        bottomPanel.add(inputField, BorderLayout.CENTER);
-        bottomPanel.add(rightPanel, BorderLayout.EAST);
-
-        frame.add(bottomPanel, BorderLayout.SOUTH);
-
-        // Listeners
-        sendButton.addActionListener(e -> sendMessage());
-        inputField.addActionListener(e -> sendMessage());
-        emojiButton.addActionListener(e -> showEmojiMenu());
-        themeToggleButton.addActionListener(e -> toggleTheme());
-
-        inputField.addKeyListener(new KeyAdapter() {
-            public void keyTyped(KeyEvent e) {
-                if (out != null) {
-                    out.println("[TYPING] " + username + "@" + currentRoom);
-                }
-            }
-        });
-
-        roomSelector.addActionListener(e -> {
+        emojiButton.setBorderPainted(false);
+        emojiButton.setContentAreaFilled(false);
+        emojiButton.setFocusPainted(false);
+        emojiButton.setFont(new Font("Segoe UI Emoji", Font.PLAIN, 16));
+        emojiButton.setToolTipText("Add emoji");
+        
+        inputField = new JTextField();
+        inputField.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(Color.LIGHT_GRAY, 1, true),
+            BorderFactory.createEmptyBorder(8, 12, 8, 12)
+        ));
+        inputField.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+        
+        sendButton = new JButton("Send");
+        sendButton.setBackground(new Color(0, 120, 212));
+        sendButton.setForeground(Color.WHITE);
+        sendButton.setFocusPainted(false);
+        sendButton.setBorderPainted(false);
+        sendButton.setOpaque(true);
+        sendButton.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        
+        JPanel inputFieldPanel = new JPanel(new BorderLayout(5, 0));
+        inputFieldPanel.add(inputField, BorderLayout.CENTER);
+        inputFieldPanel.add(sendButton, BorderLayout.EAST);
+        
+        JPanel bottomInputPanel = new JPanel(new BorderLayout(5, 0));
+        bottomInputPanel.add(emojiButton, BorderLayout.WEST);
+        bottomInputPanel.add(inputFieldPanel, BorderLayout.CENTER);
+        
+        inputPanel.add(bottomInputPanel, BorderLayout.CENTER);
+        
+        chatPanel.add(headerPanel, BorderLayout.NORTH);
+        chatPanel.add(chatScrollPane, BorderLayout.CENTER);
+        chatPanel.add(inputPanel, BorderLayout.SOUTH);
+        
+        return chatPanel;
+    }
+    
+    /**
+     * Setup event listeners for UI components
+     */
+    private void setupEventListeners() {
+        // Send button
+        sendButton.addActionListener(_ -> sendMessage());
+        
+        // Input field - send on Enter
+        inputField.addActionListener(_ -> sendMessage());
+        
+        // Room selector
+        roomSelector.addActionListener(_ -> {
             String selectedRoom = (String) roomSelector.getSelectedItem();
-            if (!selectedRoom.equals(currentRoom)) {
-                currentRoom = selectedRoom;
-                frame.setTitle(username + " @ " + currentRoom);
-                title.setText("  " + currentRoom);
-                clearChat();
-                loadHistoryForRoom(currentRoom);
-                if (out != null) {
-                    out.println("[ROOM_CHANGE] " + username + " " + currentRoom);
-                }
+            if (selectedRoom != null && !selectedRoom.equals(currentRoom) && isConnected) {
+                joinRoom(selectedRoom);
             }
         });
-
-        applyTheme();
-
-        frame.setVisible(true);
+        
+        // Emoji button
+        emojiButton.addActionListener(_ -> showEmojiPicker());
     }
-
-    private void toggleTheme() {
-        isDarkMode = !isDarkMode;
-        applyTheme();
-        themeToggleButton.setText(isDarkMode ? "Light Mode" : "Dark Mode");
-    }
-
+    
+    /**
+     * Apply visual theme to components
+     */
     private void applyTheme() {
-        Color bgDark = new Color(34, 34, 34);
-        Color bgLight = new Color(245, 245, 245);
-        Color inputBgDark = new Color(64, 64, 64);
-        Color btnBgDark = new Color(45, 140, 240);
-        Color fgDark = Color.WHITE;
-        Color fgLight = Color.BLACK;
-
-        JPanel header = (JPanel) frame.getContentPane().getComponent(0); // Header panel
-
-        if (isDarkMode) {
-            frame.getContentPane().setBackground(bgDark);
-
-            header.setBackground(bgDark);
-            title.setForeground(fgDark);
-
-            roomSelector.setBackground(inputBgDark);
-            roomSelector.setForeground(fgDark);
-            roomSelector.setOpaque(true);
-
-            typingLabel.setForeground(fgDark); // changed from lightGray to WHITE for better visibility
-
-            chatArea.setBackground(bgDark);
-            chatArea.setForeground(fgDark); // chat text bright white in dark mode
-
-            inputField.setBackground(inputBgDark);
-            inputField.setForeground(fgDark);
-
-            sendButton.setBackground(btnBgDark);
-            sendButton.setForeground(fgDark);
-            sendButton.setFocusPainted(false);
-            sendButton.setBorderPainted(false);
-
-            emojiButton.setBackground(btnBgDark);
-            emojiButton.setForeground(fgDark);
-            emojiButton.setFocusPainted(false);
-            emojiButton.setBorderPainted(false);
-
-            themeToggleButton.setBackground(btnBgDark);
-            themeToggleButton.setForeground(fgDark);
-            themeToggleButton.setFocusPainted(false);
-            themeToggleButton.setBorderPainted(false);
-
-        } else {
-            frame.getContentPane().setBackground(bgLight);
-
-            header.setBackground(null);
-            title.setForeground(fgLight);
-
-            roomSelector.setBackground(Color.WHITE);
-            roomSelector.setForeground(fgLight);
-            roomSelector.setOpaque(true);
-
-            typingLabel.setForeground(fgLight);
-
-            chatArea.setBackground(bgLight);
-            chatArea.setForeground(fgLight);
-
-            inputField.setBackground(Color.WHITE);
-            inputField.setForeground(fgLight);
-
-            sendButton.setBackground(null);
-            sendButton.setForeground(fgLight);
-            sendButton.setFocusPainted(true);
-            sendButton.setBorderPainted(true);
-
-            emojiButton.setBackground(null);
-            emojiButton.setForeground(fgLight);
-            emojiButton.setFocusPainted(true);
-            emojiButton.setBorderPainted(true);
-
-            themeToggleButton.setBackground(null);
-            themeToggleButton.setForeground(fgLight);
-            themeToggleButton.setFocusPainted(true);
-            themeToggleButton.setBorderPainted(true);
-        }
+        frame.getContentPane().setBackground(new Color(245, 245, 245));
+        inputField.requestFocusInWindow();
     }
-
+    
+    /**
+     * Send message to current room
+     */
     private void sendMessage() {
-        String text = inputField.getText().trim();
-        if (!text.isEmpty() && out != null) {
-            String timestamp = new SimpleDateFormat("HH:mm").format(new Date());
-            String formatted = "[" + currentRoom + "] " + username + " [" + timestamp + "]: " + text;
-            out.println(formatted);
-            appendMessage("Me [" + timestamp + "]: " + text, true);
+        String message = inputField.getText().trim();
+        if (!message.isEmpty() && out != null && isConnected) {
+            // Format: [Room] user: message
+            String formattedMessage = "[" + currentRoom + "] " + username + ": " + message;
+            out.println(formattedMessage);
             inputField.setText("");
-            saveToHistory("Me [" + timestamp + "]: " + text);
+            inputField.requestFocusInWindow();
         }
     }
-
-    private void appendMessage(String message, boolean isSelf) {
-        try {
-            StyledDocument doc = chatArea.getStyledDocument();
-            Style style = chatArea.addStyle("Style", null);
-            StyleConstants.setFontSize(style, 14);
-            StyleConstants.setFontFamily(style, "Segoe UI");
-            StyleConstants.setForeground(style,
-                    isSelf ? new Color(30, 144, 255) : (isDarkMode ? Color.LIGHT_GRAY : Color.DARK_GRAY));
-            StyleConstants.setBold(style, isSelf);
-            doc.insertString(doc.getLength(), message + "\n", style);
-
-            chatArea.setCaretPosition(chatArea.getDocument().getLength());
-
-        } catch (BadLocationException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private boolean isMessageFromMe(String message) {
-        try {
-            int start = message.indexOf("] ");
-            if (start == -1)
-                return false;
-            start += 2; // move past "] "
-            int end = message.indexOf(" [", start);
-            if (end == -1)
-                return false;
-            String sender = message.substring(start, end);
-            return sender.equals(username);
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private void clearChat() {
-        chatArea.setText("");
-    }
-
-    private void loadHistoryForRoom(String room) {
-        chatArea.setText("");
-        File historyFile = new File("history_" + room.replaceAll("\\s+", "_") + ".txt");
-        if (historyFile.exists()) {
-            try (BufferedReader reader = new BufferedReader(new FileReader(historyFile))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    appendMessage(line, line.startsWith("Me [") || isMessageFromMe(line));
-                }
-            } catch (IOException e) {
-                System.out.println("⚠️ Failed to load history for " + room);
+    
+    /**
+     * Change to a different room
+     */
+    private void joinRoom(String room) {
+        if (room == null || room.trim().isEmpty()) return;
+        
+        String previousRoom = currentRoom;
+        currentRoom = room.trim();
+        titleLabel.setText("Chat Room: " + currentRoom);
+        
+        // Clear chat area if changing rooms
+        if (!currentRoom.equals(previousRoom)) {
+            chatArea.setText(""); // Clear chat area
+            
+            // Send join message to server with username and room
+            if (out != null) {
+                out.println("[JOIN_ROOM] " + username + " " + currentRoom);
+                
+                // Request user list and chat history
+                out.println("[GET_USERS]");
             }
         }
     }
-
-    private void saveToHistory(String msg) {
-        File historyFile = new File("history_" + currentRoom.replaceAll("\\s+", "_") + ".txt");
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(historyFile, true))) {
-            writer.write(msg + "\n");
-        } catch (IOException e) {
-            System.out.println("⚠️ Failed to save chat history for " + currentRoom);
+    
+    /**
+     * Show emoji selection menu
+     */
+    private void showEmojiPicker() {
+        String[] emojis = {"😊", "😂", "👍", "❤️", "😢", "😮", "😎", "🤔", "🎉", "👋"};
+        String selectedEmoji = (String) JOptionPane.showInputDialog(
+            frame,
+            "Choose an emoji:",
+            "Emoji Menu",
+            JOptionPane.PLAIN_MESSAGE,
+            null,
+            emojis,
+            emojis[0]
+        );
+        
+        if (selectedEmoji != null) {
+            inputField.setText(inputField.getText() + selectedEmoji);
+            inputField.requestFocusInWindow();
         }
     }
-
+    
+    /**
+     * Connect to the chat server
+     */
     private void connectToServer() {
         try {
-            socket = new Socket("localhost", 12345);
+            socket = new Socket(SERVER_HOST, SERVER_PORT);
             out = new PrintWriter(socket.getOutputStream(), true);
-            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
+            in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            
+            isConnected = true;
+            
+            // Join the selected room
             out.println("[JOIN_ROOM] " + username + " " + currentRoom);
-
-            new Thread(() -> {
-                String msg;
-                try {
-                    while ((msg = in.readLine()) != null) {
-                        if (msg.startsWith("[TYPING] ")) {
-                            String[] parts = msg.substring(8).split("@");
-                            if (parts.length == 2) {
-                                String typer = parts[0];
-                                String room = parts[1];
-                                if (!typer.equals(username) && room.equals(currentRoom)) {
-                                    showTypingIndicator(typer);
-                                }
-                            }
-                        } else if (msg.startsWith("[" + currentRoom + "] ")) {
-                            boolean isSelf = isMessageFromMe(msg);
-                            String messageToShow = msg.substring(currentRoom.length() + 3); // skip "[Room] "
-                            appendMessage(messageToShow, isSelf);
-                            saveToHistory(messageToShow);
-                        }
-                    }
-                } catch (IOException e) {
-                    appendMessage("⚠️ Disconnected from server.", false);
-                }
-            }).start();
-
+            
+            // Start message listener thread
+            Thread messageListener = new Thread(this::listenForMessages);
+            messageListener.setDaemon(true);
+            messageListener.start();
+            
+            appendMessage("✅ Connected to ChatJar server!", false, true);
+            
         } catch (IOException e) {
-            JOptionPane.showMessageDialog(frame, "❌ Cannot connect to server", "Error", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(
+                frame,
+                "❌ Cannot connect to server at " + SERVER_HOST + ":" + SERVER_PORT + 
+                "\n\nError: " + e.getMessage() + 
+                "\n\nPlease make sure the server is running.",
+                "Connection Error",
+                JOptionPane.ERROR_MESSAGE
+            );
             System.exit(1);
         }
     }
-
-    private void showTypingIndicator(String user) {
-        typingLabel.setText(user + " is typing...");
-        Timer timer = new Timer(2000, e -> typingLabel.setText(" "));
-        timer.setRepeats(false);
-        timer.start();
-    }
-
-    private void showEmojiMenu() {
-        JPopupMenu emojiMenu = new JPopupMenu();
-        String[] emojis = { "😊", "😂", "😢", "❤️", "👍", "🎉" };
-        for (String emoji : emojis) {
-            JMenuItem item = new JMenuItem(emoji);
-            item.addActionListener(e -> inputField.setText(inputField.getText() + emoji));
-            emojiMenu.add(item);
-        }
-        emojiMenu.show(emojiButton, 0, emojiButton.getHeight());
-    }
-
-    private void setupSystemTray() {
-        if (!SystemTray.isSupported())
-            return;
-
-        SystemTray tray = SystemTray.getSystemTray();
-        Image icon = Toolkit.getDefaultToolkit().createImage(new byte[0]);
-        trayIcon = new TrayIcon(icon, "Java Group Chat");
-        trayIcon.setImageAutoSize(true);
-        trayIcon.setToolTip("Java Chat Running");
-
-        PopupMenu popup = new PopupMenu();
-        MenuItem openItem = new MenuItem("Open Chat");
-        openItem.addActionListener(e -> frame.setVisible(true));
-        popup.add(openItem);
-
-        MenuItem exitItem = new MenuItem("Exit");
-        exitItem.addActionListener(e -> System.exit(0));
-        popup.add(exitItem);
-
-        trayIcon.setPopupMenu(popup);
+    
+    /**
+     * Listen for messages from server
+     */
+    private void listenForMessages() {
         try {
-            tray.add(trayIcon);
-        } catch (AWTException e) {
+            String message;
+            while (isConnected && (message = in.readLine()) != null) {
+                processServerMessage(message);
+            }
+        } catch (IOException e) {
+            if (isConnected) {
+                SwingUtilities.invokeLater(() -> {
+                    appendMessage("⚠️ Lost connection to server.", false, true);
+                    updateConnectionStatus(false);
+                });
+            }
+        } finally {
+            isConnected = false;
+            updateConnectionStatus(false);
+        }
+    }
+    
+    /**
+     * Process incoming messages from server
+     */
+    private void processServerMessage(String message) {
+        if (message == null || message.trim().isEmpty()) return;
+        
+        try {
+            // Check if it's a user list update
+            if (message.startsWith("[USERS]")) {
+                String[] users = message.substring(7).trim().split(",");
+                onlineUsers.clear();
+                for (String user : users) {
+                    if (!user.trim().isEmpty()) {
+                        onlineUsers.add(user.trim());
+                    }
+                }
+                updateUsersList();
+                return;
+            }
+            
+            // Handle chat history messages (they start with [HISTORY])
+            if (message.startsWith("[" + MSG_HISTORY + "]")) {
+                message = message.substring(MSG_HISTORY.length() + 2).trim();
+                appendMessage(message, false, true);
+                return;
+            }
+            
+            // Handle regular messages in format: [Room] user: message
+            if (message.startsWith("[")) {
+                int endBracket = message.indexOf("]");
+                if (endBracket > 0) {
+                    String room = message.substring(1, endBracket).trim();
+                    String rest = message.substring(endBracket + 1).trim();
+                    
+                    // Skip if not in the current room
+                    if (!room.equals(currentRoom)) return;
+                    
+                    int colonIndex = rest.indexOf(":");
+                    if (colonIndex > 0) {
+                        String user = rest.substring(0, colonIndex).trim();
+                        String messageContent = rest.substring(colonIndex + 1).trim();
+                        
+                        if (user.startsWith("*")) {
+                            // System message (user join/leave)
+                            appendMessage(rest, false, true);
+                            
+                            // Request updated user list
+                            if (out != null) {
+                                out.println("[GET_USERS]");
+                            }
+                        } else {
+                            // Regular message - include username in the message
+                            String fullMessage = user + ": " + messageContent;
+                            appendMessage(fullMessage, isMessageFromMe(fullMessage), false);
+                        }
+                    } else {
+                        // Message without a colon, show as is
+                        appendMessage(rest, false, true);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("❌ Error processing message: " + e.getMessage());
             e.printStackTrace();
         }
-
-        frame.addWindowStateListener(e -> {
-            if (e.getNewState() == Frame.ICONIFIED) {
-                frame.setVisible(false);
+    }
+    
+    
+    
+    /**
+     * Update the users list in the UI
+     */
+    private void updateUsersList() {
+        if (usersListModel == null) return;
+        
+        usersListModel.clear();
+        
+        // Add all online users to the list
+        for (String user : onlineUsers) {
+            usersListModel.addElement(user);
+        }
+        
+        // Update the users list title with count
+        updateUsersListTitle(onlineUsers.size());
+    }
+    
+    private void updateUsersListTitle(int count) {
+        Container parent = usersList.getParent();
+        while (parent != null && !(parent instanceof JPanel)) {
+            parent = parent.getParent();
+        }
+        
+        if (parent instanceof JPanel) {
+            JPanel panel = (JPanel) parent;
+            if (panel.getBorder() instanceof TitledBorder) {
+                TitledBorder border = (TitledBorder) panel.getBorder();
+                border.setTitle("👥 Online Users (" + count + ")");
+                panel.repaint();
+            }
+        }
+    }
+    
+    /**
+     * Update connection status in UI
+     */
+    private void updateConnectionStatus(boolean connected) {
+        SwingUtilities.invokeLater(() -> {
+            if (!connected) {
+                usersListModel.clear();
+                usersListModel.addElement("❌ Disconnected");
+                updateUsersListTitle(0);
+                
+                sendButton.setEnabled(false);
+                inputField.setEnabled(false);
+                roomSelector.setEnabled(false);
+                
+                typingLabel.setText("❌ Offline");
+            } else {
+                sendButton.setEnabled(true);
+                inputField.setEnabled(true);
+                roomSelector.setEnabled(true);
+                
+                typingLabel.setText(" ");
             }
         });
     }
-
+    
+    /**
+     * Append message to chat area with proper formatting
+     */
+    private void appendMessage(String message, boolean isFromMe, boolean isSystemMessage) {
+        if (message == null || message.trim().isEmpty()) return;
+        
+        try {
+            StyledDocument doc = chatArea.getStyledDocument();
+            
+            // Create styles
+            Style defaultStyle = StyleContext.getDefaultStyleContext().getStyle(StyleContext.DEFAULT_STYLE);
+            
+            Style senderStyle = doc.addStyle("sender", defaultStyle);
+            StyleConstants.setBold(senderStyle, true);
+            StyleConstants.setFontSize(senderStyle, 13);
+            
+            Style messageStyle = doc.addStyle("message", defaultStyle);
+            StyleConstants.setFontSize(messageStyle, 12);
+            
+            Style timeStyle = doc.addStyle("time", defaultStyle);
+            StyleConstants.setFontSize(timeStyle, 10);
+            StyleConstants.setForeground(timeStyle, Color.GRAY);
+            
+            Style systemStyle = doc.addStyle("system", defaultStyle);
+            StyleConstants.setFontSize(systemStyle, 11);
+            StyleConstants.setForeground(systemStyle, new Color(102, 102, 102));
+            StyleConstants.setItalic(systemStyle, true);
+            
+            // Format timestamp
+            String timestamp = new SimpleDateFormat("HH:mm").format(new Date());
+            
+            if (isSystemMessage) {
+                // System message formatting
+                doc.insertString(doc.getLength(), message + "\n", systemStyle);
+                doc.insertString(doc.getLength(), timestamp + "\n\n", timeStyle);
+            } else {
+                // Parse sender and message
+                String sender = "";
+                String messageText = message;
+                
+                if (message.contains(":")) {
+                    int colonIndex = message.indexOf(":");
+                    sender = message.substring(0, colonIndex).trim();
+                    messageText = message.substring(colonIndex + 1).trim();
+                }
+                
+                // Set message alignment and background color
+                SimpleAttributeSet alignment = new SimpleAttributeSet();
+                int align = isFromMe ? StyleConstants.ALIGN_RIGHT : StyleConstants.ALIGN_LEFT;
+                StyleConstants.setAlignment(alignment, align);
+                
+                // Set background color for messages
+                Color bgColor = isFromMe ? new Color(227, 242, 253) : 
+                              sender.isEmpty() ? Color.WHITE : new Color(245, 245, 245);
+                StyleConstants.setBackground(messageStyle, bgColor);
+                
+                // Apply alignment to the paragraph
+                doc.setParagraphAttributes(doc.getLength(), 1, alignment, false);
+                
+                // Insert sender name (if not empty)
+                if (!sender.isEmpty()) {
+                    String displaySender = isFromMe ? "You" : sender;
+                    StyleConstants.setForeground(senderStyle, isFromMe ? new Color(0, 120, 212) : Color.BLACK);
+                    doc.insertString(doc.getLength(), displaySender + "\n", senderStyle);
+                }
+                
+                // Insert message text
+                doc.insertString(doc.getLength(), messageText + "\n", messageStyle);
+                
+                // Insert timestamp
+                doc.insertString(doc.getLength(), timestamp + "\n\n", timeStyle);
+            }
+            
+            // Auto-scroll to bottom
+            chatArea.setCaretPosition(doc.getLength());
+            
+        } catch (BadLocationException e) {
+            System.err.println("❌ Error appending message: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Check if message is from current user
+     */
+    private boolean isMessageFromMe(String message) {
+        if (message == null) return false;
+        return message.startsWith(username + ":") || 
+               message.startsWith("You:") || 
+               message.startsWith("You ");
+    }
+    
+    /**
+     * Disconnect from server
+     */
+    private void disconnect() {
+        if (isConnected && out != null) {
+            out.println("[DISCONNECT]");
+            isConnected = false;
+        }
+        
+        try {
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+        } catch (IOException e) {
+            System.err.println("⚠️ Error closing socket: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Custom cell renderer for user list
+     */
+    private static class UserListCellRenderer extends DefaultListCellRenderer {
+        @Override
+        public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                boolean isSelected, boolean cellHasFocus) {
+            Component c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+            
+            String text = value.toString();
+            if (text.contains("(You)")) {
+                setForeground(isSelected ? Color.WHITE : new Color(0, 120, 212));
+                setFont(getFont().deriveFont(Font.BOLD));
+            } else if (text.equals("❌ Disconnected")) {
+                setForeground(isSelected ? Color.WHITE : Color.RED);
+                setFont(getFont().deriveFont(Font.ITALIC));
+            } else {
+                setForeground(isSelected ? Color.WHITE : Color.BLACK);
+                setFont(getFont().deriveFont(Font.PLAIN));
+            }
+            
+            return c;
+        }
+    }
+    
+    /**
+     * Main method to start the chat client
+     */
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(ChatClientUI::new);
+        // Enable system properties for better font rendering
+        System.setProperty("awt.useSystemAAFontSettings", "on");
+        System.setProperty("swing.aatext", "true");
+        
+        SwingUtilities.invokeLater(() -> {
+            try {
+                new ChatClientUI();
+            } catch (Exception e) {
+                e.printStackTrace();
+                JOptionPane.showMessageDialog(
+                    null,
+                    "❌ Failed to start ChatJar client:\n" + e.getMessage(),
+                    "Startup Error",
+                    JOptionPane.ERROR_MESSAGE
+                );
+                System.exit(1);
+            }
+        });
     }
 }

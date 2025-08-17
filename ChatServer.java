@@ -1,225 +1,355 @@
-import javax.swing.*;
-import javax.swing.text.*;
-import java.awt.*;
-import java.awt.event.*;
 import java.io.*;
 import java.net.*;
 import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
-public class ChatClientUI {
-    private JFrame frame;
-    private JTextPane chatArea;
-    private JTextField inputField;
-    private JLabel typingLabel;
-    private JButton sendButton, emojiButton, themeToggleButton;
-    private PrintWriter out;
-    private String username;
-    private Socket socket;
-    private String currentRoom = "Sun Squad";
-    private boolean isDarkMode = false;
+/**
+ * ChatServer - Multi-room chat server that handles client connections
+ * and manages room-based messaging system with enhanced features.
+ */
+public class ChatServer {
+    // Configuration
+    private static int PORT = 8888;
+    private static final int MAX_CONNECTIONS = 1000;
+    private static final int CONNECTION_RATE_LIMIT = 10; // Max connections per second
+    private static final int SOCKET_TIMEOUT = 30000; // 30 seconds
 
-    public ChatClientUI() {
-        username = JOptionPane.showInputDialog(null, "Enter your username:");
-        if (username == null || username.trim().isEmpty()) {
-            JOptionPane.showMessageDialog(null, "Username is required.");
-            System.exit(0);
-        }
+    // Server state
+    private static final Set<Socket> clientSockets = Collections.synchronizedSet(new HashSet<>());
+    private static final ChatHistoryManager chatHistoryManager = new ChatHistoryManager();
+    private static final Map<String, String> onlineUsers = new ConcurrentHashMap<>();
+    private static volatile boolean isRunning = true;
+    private static final AtomicInteger connectionCount = new AtomicInteger(0);
+    private static final AtomicLong totalConnections = new AtomicLong(0);
+    private static final AtomicInteger rejectedConnections = new AtomicInteger(0);
+    private static final RateLimiter rateLimiter = new RateLimiter(CONNECTION_RATE_LIMIT, 1000);
+    private static final ExecutorService clientHandlerPool = Executors.newCachedThreadPool();
+    private static final SimpleDateFormat logDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
-        String[] rooms = {"Sun Squad", "Cake Squad", "Moon Crew", "Star Gang"};
-        currentRoom = (String) JOptionPane.showInputDialog(
-                null, "Choose a chat room:", "Room Selection",
-                JOptionPane.PLAIN_MESSAGE, null, rooms, rooms[0]);
-        if (currentRoom == null || currentRoom.trim().isEmpty()) {
-            JOptionPane.showMessageDialog(null, "Room selection is required.");
-            System.exit(0);
-        }
+    // Statistics
+    private static long serverStartTime = System.currentTimeMillis();
 
-        initUI();
-        connectToServer();
-    }
+    public static void main(String[] args) {
+        // Parse command line arguments
+        parseArguments(args);
 
-    private void initUI() {
-        frame = new JFrame(username + " @ " + currentRoom);
-        frame.setSize(700, 600);
-        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        frame.setLayout(new BorderLayout());
+        log("🚀 Chat Server starting on port " + PORT + "...");
 
-        // Header panel with room label and dark mode toggle
-        JPanel header = new JPanel(new BorderLayout());
-        JLabel roomLabel = new JLabel("Room: " + currentRoom);
-        roomLabel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        header.add(roomLabel, BorderLayout.WEST);
+        // Add shutdown hook for graceful server shutdown
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            log("\n🛑 Shutting down server...");
+            isRunning = false;
+            closeAllConnections();
+            clientHandlerPool.shutdown();
+            try {
+                if (!clientHandlerPool.awaitTermination(5, TimeUnit.SECONDS)) {
+                    clientHandlerPool.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                clientHandlerPool.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            log("Server shutdown complete");
+        }));
 
-        typingLabel = new JLabel(" ");
-        typingLabel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        header.add(typingLabel, BorderLayout.EAST);
+        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+            serverSocket.setSoTimeout(1000); // Check for shutdown every second
+            log("✅ Chat Server is running on port " + PORT);
+            log("💡 Press Ctrl+C to stop the server");
+            log("📊 Server info: Max connections: " + MAX_CONNECTIONS + 
+                ", Connection timeout: " + SOCKET_TIMEOUT/1000 + "s");
 
-        themeToggleButton = new JButton("Dark Mode");
-        header.add(themeToggleButton, BorderLayout.SOUTH);
+            while (isRunning) {
+                try {
+                    Socket clientSocket = serverSocket.accept();
 
-        frame.add(header, BorderLayout.NORTH);
+                    // Check connection limits
+                    if (connectionCount.get() >= MAX_CONNECTIONS) {
+                        rejectConnection(clientSocket, "Server at capacity");
+                        continue;
+                    }
 
-        // Chat display area
-        chatArea = new JTextPane();
-        chatArea.setEditable(false);
-        JScrollPane scrollPane = new JScrollPane(chatArea);
-        frame.add(scrollPane, BorderLayout.CENTER);
+                    // Check rate limiting
+                    if (!rateLimiter.allowRequest()) {
+                        rejectConnection(clientSocket, "Connection rate limit exceeded");
+                        continue;
+                    }
 
-        // Input area with emoji and send buttons
-        JPanel bottomPanel = new JPanel(new BorderLayout(5, 5));
-        inputField = new JTextField();
-        sendButton = new JButton("Send");
-        emojiButton = new JButton("😊");
+                    // Configure socket
+                    clientSocket.setSoTimeout(SOCKET_TIMEOUT);
+                    clientSockets.add(clientSocket);
+                    connectionCount.incrementAndGet();
+                    totalConnections.incrementAndGet();
 
-        JPanel rightPanel = new JPanel(new GridLayout(1, 2, 5, 5));
-        rightPanel.add(emojiButton);
-        rightPanel.add(sendButton);
+                    log("🔗 New client connected: " + 
+                        clientSocket.getInetAddress().getHostAddress() + ":" + clientSocket.getPort() +
+                        " (Active: " + connectionCount.get() + ", Total: " + totalConnections.get() + ")");
 
-        bottomPanel.add(inputField, BorderLayout.CENTER);
-        bottomPanel.add(rightPanel, BorderLayout.EAST);
-        bottomPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        frame.add(bottomPanel, BorderLayout.SOUTH);
+                    // Submit client handler to thread pool
+                    clientHandlerPool.submit(() -> {
+                        ClientHandler handler = new ClientHandler(clientSocket, clientSockets, onlineUsers);
+                        try {
+                            handler.run();
+                        } finally {
+                            connectionCount.decrementAndGet();
+                        }
+                    });
 
-        // Listeners
-        sendButton.addActionListener(e -> sendMessage());
-        inputField.addActionListener(e -> sendMessage());
-        emojiButton.addActionListener(e -> showEmojiMenu());
-        themeToggleButton.addActionListener(e -> toggleTheme());
-
-        inputField.addKeyListener(new KeyAdapter() {
-            public void keyTyped(KeyEvent e) {
-                if (out != null) {
-                    out.println("[TYPING]" + "|" + username + "|" + currentRoom);
+                } catch (SocketTimeoutException e) {
+                    // Expected timeout for shutdown check
+                } catch (IOException e) {
+                    if (isRunning) {
+                        logError("Error accepting client connection", e);
+                    }
                 }
             }
-        });
-
-        applyTheme();
-
-        frame.setVisible(true);
-    }
-
-    private void toggleTheme() {
-        isDarkMode = !isDarkMode;
-        applyTheme();
-        themeToggleButton.setText(isDarkMode ? "Light Mode" : "Dark Mode");
-    }
-
-    private void applyTheme() {
-        Color bg = isDarkMode ? Color.DARK_GRAY : Color.WHITE;
-        Color fg = isDarkMode ? Color.WHITE : Color.BLACK;
-
-        frame.getContentPane().setBackground(bg);
-        chatArea.setBackground(bg);
-        chatArea.setForeground(fg);
-        inputField.setBackground(isDarkMode ? new Color(64, 64, 64) : Color.WHITE);
-        inputField.setForeground(fg);
-        typingLabel.setForeground(fg);
-        sendButton.setBackground(isDarkMode ? new Color(30, 144, 255) : null);
-        sendButton.setForeground(isDarkMode ? Color.WHITE : null);
-        emojiButton.setBackground(isDarkMode ? new Color(30, 144, 255) : null);
-        emojiButton.setForeground(isDarkMode ? Color.WHITE : null);
-    }
-
-    private void sendMessage() {
-        String text = inputField.getText().trim();
-        if (!text.isEmpty() && out != null) {
-            String timestamp = new SimpleDateFormat("HH:mm").format(new Date());
-            // Format: ROOM|USERNAME|HH:mm|MESSAGE
-            String msg = currentRoom + "|" + username + "|" + timestamp + "|" + text;
-            out.println(msg);
-            appendMessage("Me [" + timestamp + "]: " + text, true);
-            inputField.setText("");
-        }
-    }
-
-    private void appendMessage(String message, boolean isSelf) {
-        try {
-            StyledDocument doc = chatArea.getStyledDocument();
-            Style style = chatArea.addStyle("Style", null);
-            StyleConstants.setFontSize(style, 14);
-            StyleConstants.setFontFamily(style, "Segoe UI");
-            StyleConstants.setForeground(style, isSelf ? new Color(30, 144, 255) : (isDarkMode ? Color.LIGHT_GRAY : Color.DARK_GRAY));
-            StyleConstants.setBold(style, isSelf);
-            doc.insertString(doc.getLength(), message + "\n", style);
-            chatArea.setCaretPosition(doc.getLength());
-        } catch (BadLocationException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void connectToServer() {
-        try {
-            socket = new Socket("localhost", 12345);
-            out = new PrintWriter(socket.getOutputStream(), true);
-            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-
-            // Inform server of join
-            out.println("[JOIN_ROOM]" + "|" + username + "|" + currentRoom);
-
-            new Thread(() -> {
-                String msg;
-                try {
-                    while ((msg = in.readLine()) != null) {
-                        // Handle typing notification
-                        if (msg.startsWith("[TYPING]")) {
-                            // Format: [TYPING]|username|room
-                            String[] parts = msg.split("\\|");
-                            if (parts.length == 3) {
-                                String typer = parts[1];
-                                String room = parts[2];
-                                if (!typer.equals(username) && room.equals(currentRoom)) {
-                                    showTypingIndicator(typer);
-                                }
-                            }
-                            continue;
-                        }
-
-                        // Normal message format: ROOM|SENDER|HH:mm|TEXT
-                        String[] parts = msg.split("\\|", 4);
-                        if (parts.length == 4) {
-                            String room = parts[0];
-                            String sender = parts[1];
-                            String time = parts[2];
-                            String text = parts[3];
-
-                            if (room.equals(currentRoom)) {
-                                boolean isSelf = sender.equals(username);
-                                appendMessage(sender + " [" + time + "]: " + text, isSelf);
-                            }
-                        }
-                    }
-                } catch (IOException e) {
-                    appendMessage("⚠️ Disconnected from server.", false);
-                }
-            }).start();
-
         } catch (IOException e) {
-            JOptionPane.showMessageDialog(frame, "❌ Cannot connect to server", "Error", JOptionPane.ERROR_MESSAGE);
+            System.err.println("❌ Server exception: " + e.getMessage());
+        }
+
+        System.out.println("👋 Server stopped");
+    }
+
+    /**
+     * Updates user's current room
+     */
+    public static synchronized void updateUserRoom(String username, String room) {
+        if (username != null && room != null && !username.trim().isEmpty() && !room.trim().isEmpty()) {
+            onlineUsers.put(username, room);
+            log("👤 User '" + username + "' joined room '" + room + "'");
+        }
+    }
+
+    /**
+     * Broadcasts message to all users in a room
+     */
+    private static void broadcastToRoom(String message, String room) {
+        if (room == null) return;
+        
+        // Save message to history if it's a chat message (not a system/join/leave message)
+        if (message.matches("\\[[^]]+\\] [^:]+: .+")) {
+            chatHistoryManager.addMessage(room, message);
+        }
+        
+        Set<ClientHandler> roomClients = ClientHandler.roomClients.get(room);
+        if (roomClients == null) return;
+        
+        // Send to all clients in the room
+        for (ClientHandler client : roomClients) {
+            client.sendMessage(message);
+        }
+    }
+
+    /**
+     * Removes user from online users list
+     */
+    public static synchronized void removeUser(String username) {
+        if (username != null && !username.trim().isEmpty()) {
+            String room = onlineUsers.remove(username);
+            if (room != null) {
+                log("👋 User '" + username + "' left from room '" + room + "'");
+            }
+        }
+    }
+
+    /**
+     * Gets list of all online users as space-separated string
+     */
+    public static synchronized String getOnlineUsersList() {
+        return String.join(" ", onlineUsers.keySet());
+    }
+
+    /**
+     * Gets the room that a user is currently in
+     */
+    public static synchronized String getUserRoom(String username) {
+        return onlineUsers.get(username);
+    }
+
+    /**
+     * Gets count of online users
+     */
+    public static synchronized int getOnlineUsersCount() {
+        return onlineUsers.size();
+    }
+
+    /**
+     * Gets users in a specific room
+     */
+    public static synchronized Set<String> getUsersInRoom(String room) {
+        Set<String> usersInRoom = new HashSet<>();
+        for (Map.Entry<String, String> entry : onlineUsers.entrySet()) {
+            if (room.equals(entry.getValue())) {
+                usersInRoom.add(entry.getKey());
+            }
+        }
+        return usersInRoom;
+    }
+    
+    /**
+     * Get chat history for a room
+     */
+    public static List<String> getChatHistory(String room) {
+        return chatHistoryManager.getRecentMessages(room, 100); // Last 100 messages
+    }
+
+    /**
+     * Parse command line arguments
+     */
+    private static void parseArguments(String[] args) {
+        try {
+            for (int i = 0; i < args.length; i++) {
+                switch (args[i]) {
+                    case "-p":
+                    case "--port":
+                        if (i + 1 < args.length) {
+                            PORT = Integer.parseInt(args[++i]);
+                        }
+                        break;
+                    case "-h":
+                    case "--help":
+                        printHelp();
+                        System.exit(0);
+                        break;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error parsing arguments: " + e.getMessage());
+            printHelp();
             System.exit(1);
         }
     }
 
-    private void showTypingIndicator(String user) {
-        typingLabel.setText(user + " is typing...");
-        Timer timer = new Timer(2000, e -> typingLabel.setText(" "));
-        timer.setRepeats(false);
-        timer.start();
+    /**
+     * Print help message
+     */
+    private static void printHelp() {
+        System.out.println("\nChatServer - Multi-room chat server");
+        System.out.println("Usage: java ChatServer [options]");
+        System.out.println("Options:");
+        System.out.println("  -p, --port PORT    Set server port (default: 8888)");
+        System.out.println("  -h, --help         Show this help message\n");
     }
 
-    private void showEmojiMenu() {
-        JPopupMenu emojiMenu = new JPopupMenu();
-        String[] emojis = {"😊", "😂", "😢", "❤️", "👍", "🎉"};
-        for (String emoji : emojis) {
-            JMenuItem item = new JMenuItem(emoji);
-            item.addActionListener(e -> inputField.setText(inputField.getText() + emoji));
-            emojiMenu.add(item);
+    /**
+     * Reject a connection with a message
+     */
+    private static void rejectConnection(Socket socket, String reason) {
+        try (PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+            out.println("[ERROR] " + reason);
+            log("❌ Connection rejected: " + reason + " from " + 
+                socket.getInetAddress().getHostAddress());
+            rejectedConnections.incrementAndGet();
+        } catch (IOException e) {
+            logError("Error sending rejection message", e);
+        } finally {
+            try {
+                socket.close();
+            } catch (IOException e) {
+                logError("Error closing rejected socket", e);
+            }
         }
-        emojiMenu.show(emojiButton, 0, emojiButton.getHeight());
     }
 
-    public static void main(String[] args) {
-        SwingUtilities.invokeLater(ChatClientUI::new);
+    /**
+     * Closes all client connections gracefully
+     */
+    private static void closeAllConnections() {
+        log("Closing all client connections...");
+        int count = 0;
+        synchronized (clientSockets) {
+            count = clientSockets.size();
+            for (Socket socket : clientSockets) {
+                try {
+                    if (!socket.isClosed()) {
+                        socket.close();
+                    }
+                } catch (IOException e) {
+                    logError("Error closing client socket", e);
+                }
+            }
+            clientSockets.clear();
+        }
+        onlineUsers.clear();
+        log("Closed " + count + " client connections");
+    }
+
+    /**
+     * Get server statistics
+     */
+    public static synchronized String getServerStats() {
+        long uptime = (System.currentTimeMillis() - serverStartTime) / 1000;
+        long hours = uptime / 3600;
+        long minutes = (uptime % 3600) / 60;
+        long seconds = uptime % 60;
+
+        return String.format(
+            "📊 Server Statistics:%n" +
+            "• Uptime: %d hours, %d minutes, %d seconds%n" +
+            "• Active connections: %d%n" +
+            "• Total connections: %d%n" +
+            "• Rejected connections: %d%n" +
+            "• Online users: %d%n" +
+            "• Active rooms: %d",
+            hours, minutes, seconds,
+            connectionCount.get(),
+            totalConnections.get(),
+            rejectedConnections.get(),
+            onlineUsers.size(),
+            new HashSet<>(onlineUsers.values()).size()
+        );
+    }
+
+    /**
+     * Log a message with timestamp
+     */
+    private static void log(String message) {
+        System.out.printf("[%s] %s%n", logDateFormat.format(new Date()), message);
+    }
+
+    /**
+     * Log an error with stack trace
+     */
+    private static void logError(String message, Throwable t) {
+        System.err.printf("[%s] ❌ %s: %s%n", 
+            logDateFormat.format(new Date()), message, t.getMessage());
+    }
+    
+    /**
+     * Simple rate limiter implementation using a sliding window algorithm
+     */
+    private static class RateLimiter {
+        private final int maxRequests;
+        private final long timeWindowInMillis;
+        private final Queue<Long> requestTimes;
+        
+        public RateLimiter(int maxRequests, long timeWindowInMillis) {
+            this.maxRequests = maxRequests;
+            this.timeWindowInMillis = timeWindowInMillis;
+            this.requestTimes = new ConcurrentLinkedQueue<>();
+        }
+        
+        public synchronized boolean allowRequest() {
+            long currentTime = System.currentTimeMillis();
+            
+            // Remove timestamps older than the time window
+            while (!requestTimes.isEmpty() && 
+                   currentTime - requestTimes.peek() > timeWindowInMillis) {
+                requestTimes.poll();
+            }
+            
+            // Check if we can allow the request
+            if (requestTimes.size() < maxRequests) {
+                requestTimes.offer(currentTime);
+                return true;
+            }
+            
+            return false;
+        }
     }
 }
