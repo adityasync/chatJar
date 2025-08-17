@@ -39,10 +39,11 @@ public class ChatClientUI {
     
     // Message types
     private static final String MSG_HISTORY = "HISTORY";
-    
-    // Configuration
+    private static final String HEARTBEAT = "PING";
     private static final String SERVER_HOST = "localhost";
     private static final int SERVER_PORT = 8888;
+    private static final long HEARTBEAT_INTERVAL = 30000; // 30 seconds
+    private volatile long lastHeartbeatTime = System.currentTimeMillis();
     private static final String[] AVAILABLE_ROOMS = {
         "Sun Squad", "Cake Squad", "Moon Crew", "Star Gang"
     };
@@ -323,28 +324,29 @@ public class ChatClientUI {
             inputField.requestFocusInWindow();
         }
     }
-    
+
     /**
-     * Change to a different room
+     * Join a chat room
      */
     private void joinRoom(String room) {
-        if (room == null || room.trim().isEmpty()) return;
+        if (room == null || room.isEmpty() || room.equals(currentRoom)) {
+            return;
+        }
+
+        // Update current room
+        currentRoom = room;
+
+        // Clear online users when changing rooms
+        onlineUsers.clear();
+        updateUsersList();
+
+        // Update UI
+        roomSelector.setSelectedItem(room);
+        chatArea.setText("");
         
-        String previousRoom = currentRoom;
-        currentRoom = room.trim();
-        titleLabel.setText("Chat Room: " + currentRoom);
-        
-        // Clear chat area if changing rooms
-        if (!currentRoom.equals(previousRoom)) {
-            chatArea.setText(""); // Clear chat area
-            
-            // Send join message to server with username and room
-            if (out != null) {
-                out.println("[JOIN_ROOM] " + username + " " + currentRoom);
-                
-                // Request user list and chat history
-                out.println("[GET_USERS]");
-            }
+        // Send join message to server if connected
+        if (isConnected && out != null) {
+            out.println("[JOIN_ROOM] " + username + " " + room);
         }
     }
     
@@ -362,31 +364,39 @@ public class ChatClientUI {
             emojis,
             emojis[0]
         );
-        
+
         if (selectedEmoji != null) {
             inputField.setText(inputField.getText() + selectedEmoji);
             inputField.requestFocusInWindow();
         }
     }
-    
+
     /**
      * Connect to the chat server
      */
     private void connectToServer() {
         try {
-            socket = new Socket(SERVER_HOST, SERVER_PORT);
-            out = new PrintWriter(socket.getOutputStream(), true);
+            socket = new Socket();
+            // Set a read timeout to detect dead connections
+            socket.setSoTimeout(60000); // 60 seconds
+            socket.connect(new InetSocketAddress(SERVER_HOST, SERVER_PORT), 10000); // 10s connection timeout
+            
+            out = new PrintWriter(new BufferedWriter(new OutputStreamWriter(socket.getOutputStream())), true);
             in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             
             isConnected = true;
-            
-            // Join the selected room
-            out.println("[JOIN_ROOM] " + username + " " + currentRoom);
+            lastHeartbeatTime = System.currentTimeMillis();
             
             // Start message listener thread
             Thread messageListener = new Thread(this::listenForMessages);
             messageListener.setDaemon(true);
             messageListener.start();
+            
+            // Start heartbeat thread
+            startHeartbeat();
+            
+            // Join the selected room
+            out.println("[JOIN_ROOM] " + username + " " + currentRoom);
             
             appendMessage("✅ Connected to ChatJar server!", false, true);
             
@@ -410,18 +420,25 @@ public class ChatClientUI {
         try {
             String message;
             while (isConnected && (message = in.readLine()) != null) {
+                lastHeartbeatTime = System.currentTimeMillis();
+                if (message.equals(HEARTBEAT)) {
+                    continue; // Skip heartbeat messages
+                }
                 processServerMessage(message);
             }
+        } catch (SocketTimeoutException e) {
+            System.err.println("Socket read timeout: " + e.getMessage());
         } catch (IOException e) {
+            System.err.println("Error reading from server: " + e.getMessage());
+        } finally {
             if (isConnected) {
                 SwingUtilities.invokeLater(() -> {
                     appendMessage("⚠️ Lost connection to server.", false, true);
                     updateConnectionStatus(false);
                 });
+                isConnected = false;
+                updateConnectionStatus(false);
             }
-        } finally {
-            isConnected = false;
-            updateConnectionStatus(false);
         }
     }
     
@@ -431,10 +448,24 @@ public class ChatClientUI {
     private void processServerMessage(String message) {
         if (message == null || message.trim().isEmpty()) return;
         
+        // Handle user list updates
+        if (message.startsWith("[USER_LIST]")) {
+            String[] users = message.substring("[USER_LIST]".length()).split(",");
+            onlineUsers.clear();
+            for (String user : users) {
+                if (!user.trim().isEmpty()) {
+                    onlineUsers.add(user.trim());
+                }
+            }
+            SwingUtilities.invokeLater(this::updateUsersList);
+            return;
+        }
+        
         try {
             // Check if it's a user list update
             if (message.startsWith("[USERS]")) {
-                String[] users = message.substring(7).trim().split(",");
+                // Format: [USERS] user1 user2 user3
+                String[] users = message.substring(7).trim().split("\\s+");
                 onlineUsers.clear();
                 for (String user : users) {
                     if (!user.trim().isEmpty()) {
@@ -462,37 +493,83 @@ public class ChatClientUI {
                     // Skip if not in the current room
                     if (!room.equals(currentRoom)) return;
                     
-                    int colonIndex = rest.indexOf(":");
-                    if (colonIndex > 0) {
-                        String user = rest.substring(0, colonIndex).trim();
-                        String messageContent = rest.substring(colonIndex + 1).trim();
+                    // Check for system messages (join/leave)
+                    if (rest.startsWith("*")) {
+                        // System message (user join/leave)
+                        appendMessage(rest, false, true);
                         
-                        if (user.startsWith("*")) {
-                            // System message (user join/leave)
-                            appendMessage(rest, false, true);
-                            
-                            // Request updated user list
-                            if (out != null) {
-                                out.println("[GET_USERS]");
-                            }
-                        } else {
-                            // Regular message - include username in the message
-                            String fullMessage = user + ": " + messageContent;
-                            appendMessage(fullMessage, isMessageFromMe(fullMessage), false);
+                        // Request updated user list
+                        if (out != null) {
+                            out.println("[GET_USERS]");
                         }
                     } else {
-                        // Message without a colon, show as is
-                        appendMessage(rest, false, true);
+                        // Regular message
+                        appendMessage(rest, isMessageFromMe(rest), false);
                     }
                 }
             }
         } catch (Exception e) {
-            System.err.println("❌ Error processing message: " + e.getMessage());
+            System.err.println("Error processing server message: " + e.getMessage());
             e.printStackTrace();
         }
     }
     
+    /**
+     * Start heartbeat mechanism
+     */
+    private void startHeartbeat() {
+        Thread heartbeatThread = new Thread(() -> {
+            while (isConnected) {
+                try {
+                    Thread.sleep(HEARTBEAT_INTERVAL);
+                    long timeSinceLastHeartbeat = System.currentTimeMillis() - lastHeartbeatTime;
+                    if (timeSinceLastHeartbeat > HEARTBEAT_INTERVAL * 2) {
+                        // No response from server for too long, consider connection dead
+                        System.err.println("No heartbeat response from server, disconnecting...");
+                        disconnect();
+                        break;
+                    }
+                    if (out != null) {
+                        out.println(HEARTBEAT);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    System.err.println("Error sending heartbeat: " + e.getMessage());
+                    disconnect();
+                    break;
+                }
+            }
+        });
+        heartbeatThread.setDaemon(true);
+        heartbeatThread.start();
+    }
     
+    /**
+     * Disconnect from server
+     */
+    private void disconnect() {
+        if (!isConnected) return;
+        isConnected = false;
+        try {
+            if (out != null) {
+                out.println("[DISCONNECT]");
+                out.close();
+            }
+            if (in != null) in.close();
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+        } catch (IOException e) {
+            System.err.println("Error disconnecting: " + e.getMessage());
+        } finally {
+            // Clear online users when disconnecting
+            onlineUsers.clear();
+            updateUsersList();
+            updateConnectionStatus(false);
+        }
+    }
     
     /**
      * Update the users list in the UI
@@ -641,24 +718,6 @@ public class ChatClientUI {
         return message.startsWith(username + ":") || 
                message.startsWith("You:") || 
                message.startsWith("You ");
-    }
-    
-    /**
-     * Disconnect from server
-     */
-    private void disconnect() {
-        if (isConnected && out != null) {
-            out.println("[DISCONNECT]");
-            isConnected = false;
-        }
-        
-        try {
-            if (socket != null && !socket.isClosed()) {
-                socket.close();
-            }
-        } catch (IOException e) {
-            System.err.println("⚠️ Error closing socket: " + e.getMessage());
-        }
     }
     
     /**

@@ -118,6 +118,18 @@ public class ChatServer {
     /**
      * Updates user's current room
      */
+    /**
+     * Add a message to the chat history
+     */
+    public static synchronized void addToHistory(String room, String message) {
+        if (room != null && message != null) {
+            chatHistoryManager.addMessage(room, message);
+        }
+    }
+    
+    /**
+     * Update user's current room
+     */
     public static synchronized void updateUserRoom(String username, String room) {
         if (username != null && room != null && !username.trim().isEmpty() && !room.trim().isEmpty()) {
             onlineUsers.put(username, room);
@@ -126,22 +138,43 @@ public class ChatServer {
     }
 
     /**
-     * Broadcasts message to all users in a room
-     */
-    private static void broadcastToRoom(String message, String room) {
-        if (room == null) return;
-        
-        // Save message to history if it's a chat message (not a system/join/leave message)
-        if (message.matches("\\[[^]]+\\] [^:]+: .+")) {
-            chatHistoryManager.addMessage(room, message);
+        // Send to all clients in the room
+        for (ClientHandler client : clientsCopy) {
+            if (client.isConnected()) {
+                client.sendMessage(message);
+            }
         }
+        
+        // If this is a join/leave message, update user lists for everyone in the room
+        if (message.contains(" joined ") || message.contains(" left ")) {
+            broadcastUserListToRoom(room);
+        }
+    }
+    
+    /**
+     * Broadcast updated user list to all clients in a room
+     */
+    private static void broadcastUserListToRoom(String room) {
+        if (room == null) return;
         
         Set<ClientHandler> roomClients = ClientHandler.roomClients.get(room);
         if (roomClients == null) return;
         
+        // Get all users in this room
+        Set<String> usersInRoom = new HashSet<>();
+        for (Map.Entry<String, String> entry : onlineUsers.entrySet()) {
+            if (room.equals(entry.getValue())) {
+                usersInRoom.add(entry.getKey());
+            }
+        }
+        
+        String userList = "[USERS] " + String.join(" ", usersInRoom);
+        
         // Send to all clients in the room
         for (ClientHandler client : roomClients) {
-            client.sendMessage(message);
+            if (client.isConnected()) {
+                client.sendMessage(userList);
+            }
         }
     }
 

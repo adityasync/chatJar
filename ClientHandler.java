@@ -22,7 +22,14 @@ public class ClientHandler implements Runnable {
     // Client state
     private String username;
     private String currentRoom;
-    private volatile boolean isConnected = true;
+    protected volatile boolean isConnected = true;
+    
+    /**
+     * Check if the client is connected
+     */
+    public boolean isConnected() {
+        return isConnected;
+    }
     
     public ClientHandler(Socket socket, Set<Socket> clientSockets, Map<String, String> onlineUsers) {
         this.socket = socket;
@@ -65,6 +72,9 @@ public class ClientHandler implements Runnable {
         for (String message : history) {
             sendMessage(message);
         }
+        
+        // Broadcast updated user list to all clients in the room
+        broadcastUserList(room);
     }
     
     /**
@@ -77,6 +87,9 @@ public class ClientHandler implements Runnable {
                 room.remove(this);
                 if (room.isEmpty()) {
                     roomClients.remove(currentRoom);
+                } else {
+                    // Broadcast updated user list to remaining clients in the room
+                    broadcastUserList(currentRoom);
                 }
             }
             currentRoom = null;
@@ -131,7 +144,6 @@ public class ClientHandler implements Runnable {
             } else if (message.startsWith("[ROOM_CHANGE] ")) {
                 handleRoomChange(message);
             } else if (message.startsWith("[")) {
-                // Handle regular message: [Room] user: message
                 int endBracket = message.indexOf("]");
                 if (endBracket > 0) {
                     String room = message.substring(1, endBracket).trim();
@@ -142,8 +154,16 @@ public class ClientHandler implements Runnable {
                         joinRoom(room);
                     }
                     
-                    // Broadcast the message to the room
-                    broadcastToRoom(message);
+                    // If this is a chat message (contains a colon after room name)
+                    if (content.contains(":")) {
+                        // Save to chat history
+                        ChatServer.addToHistory(room, message);
+                        // Broadcast to all in the room
+                        broadcastToRoom(message);
+                    } else {
+                        // Handle other types of messages
+                        broadcastToRoom(message);
+                    }
                 }
             } else {
                 System.out.println("⚠️ Unknown message format: " + message);
@@ -151,6 +171,31 @@ public class ClientHandler implements Runnable {
         } catch (Exception e) {
             System.err.println("❌ Error handling message: " + e.getMessage());
             e.printStackTrace();
+        }
+    }
+    
+    /**
+     * Broadcast updated user list to all clients in the room
+     */
+    private void broadcastUserList(String room) {
+        Set<ClientHandler> roomClients = ClientHandler.roomClients.get(room);
+        if (roomClients != null && !roomClients.isEmpty()) {
+            // Build user list message
+            StringBuilder userList = new StringBuilder("[USER_LIST]");
+            for (ClientHandler client : roomClients) {
+                if (client.username != null && !client.username.isEmpty()) {
+                    userList.append(client.username).append(",");
+                }
+            }
+            // Remove trailing comma if any users exist
+            if (userList.length() > "[USER_LIST]".length()) {
+                userList.setLength(userList.length() - 1);
+            }
+            
+            // Send to each client in the room
+            for (ClientHandler client : roomClients) {
+                client.sendMessage(userList.toString());
+            }
         }
     }
     
@@ -241,7 +286,7 @@ public class ClientHandler implements Runnable {
         Set<ClientHandler> usersCopy = new HashSet<>(roomUsers);
         
         for (ClientHandler client : usersCopy) {
-            if (client.isConnected && client.out != null) {
+            if (client.isConnected() && client.out != null) {
                 try {
                     client.out.println(message);
                 } catch (Exception e) {
@@ -264,7 +309,7 @@ public class ClientHandler implements Runnable {
         Set<ClientHandler> roomUsers = roomClients.getOrDefault(currentRoom, Collections.emptySet());
         
         for (ClientHandler client : new HashSet<>(roomUsers)) {
-            if (client.isConnected && client.out != null) {
+            if (client.isConnected() && client.out != null) {
                 try {
                     client.out.println("[USERS]" + userList);
                 } catch (Exception e) {
